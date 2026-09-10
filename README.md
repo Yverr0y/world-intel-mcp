@@ -6,7 +6,7 @@
 [![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-green)](https://python.org)
 [![License](https://img.shields.io/badge/License-MIT-yellow)](LICENSE)
 
-Real-time global intelligence across **30+ domains** with **120 MCP tools**, a live ops-center dashboard, a CLI, and a **Qdrant vector store** for enterprise-grade semantic search across accumulated intelligence. All data comes from free, public APIs: no paid subscriptions required.
+Real-time global intelligence across **30+ domains** with **132 MCP tools**, a live ops-center dashboard, a CLI, and a **Qdrant vector store** for enterprise-grade semantic search across accumulated intelligence. All data comes from free, public APIs: no paid subscriptions required.
 
 Built for AI agents that need world awareness: market conditions, geopolitical risk, military posture, supply chain disruptions, cyber threats, and more — all queryable via the Model Context Protocol. The vector store enables natural language queries like *"military activity near Taiwan"* or *"cyber threats targeting healthcare"* across all historical data.
 
@@ -31,7 +31,7 @@ Built for AI agents that need world awareness: market conditions, geopolitical r
 | **Climate** | 1 | Open-Meteo temperature/precipitation anomalies |
 | **Conflict & Security** | 4 | ACLED events, UCDP, unrest detection, humanitarian data |
 | **Military & Defense** | 6 | adsb.lol, OpenSky, hexdb.io, surge detection, theater posture, aircraft batch |
-| **Infrastructure** | 4 | Cloudflare Radar, submarine cables, cascade analysis, cloud status |
+| **Infrastructure** | 5 | Cloudflare Radar, submarine cables, cascade analysis, cloud status, RIPEstat BGP/RPKI |
 | **Maritime** | 2 | NGA navigation warnings, vessel snapshots |
 | **Aviation** | 2 | FAA airport delays, domestic flight snapshot |
 | **News & Media** | 3 | 119 RSS feeds (4-tier), GDELT, trending keywords |
@@ -57,10 +57,14 @@ Built for AI agents that need world awareness: market conditions, geopolitical r
 | **Cross-Domain Analytics** | 3 | Correlation, domain summary, trend detection |
 | **Reports** | 1 | PDF/HTML multi-domain intelligence reports |
 | **Daily Digest** | 1 | Cited markdown morning brief: top events, headlines, trends, and timeline |
-| **AOI Geofences** | 5 | User-defined areas of interest: define/list/delete, a cited multi-domain brief, and hotspot escalation scoring for a user's own area |
+| **AOI Geofences** | 10 | User-defined areas of interest in three shapes (circle, polygon, corridor): define/list/update/delete, a cited multi-domain brief, hotspot escalation scoring, and enter/leave change detection for a user's own area. News is scoped to the place the area sits in (OSM Nominatim reverse geocoding, no key), not to the area's name |
+| **Severe Weather** | 2 | NWS active CAP alerts (US), Meteoalarm (39 EU countries) |
+| **Space Launches** | 1 | Launch Library 2 upcoming launches |
+| **Volcanoes** | 1 | Smithsonian GVP weekly activity report |
+| **Tropical Cyclones** | 2 | NHC (Atlantic, E/C Pacific) + JTWC (NW Pacific, N Indian, S Hemisphere) |
 | **Situation Brief** | 1 | Cited situational awareness brief over MCP: bounded server-side overview synthesized via local Ollama, with a mechanically-cited fallback |
 
-**Total: 120 tools** across 30+ intelligence domains.
+**Total: 132 tools** across 30+ intelligence domains.
 
 ---
 
@@ -116,7 +120,7 @@ intel report -o brief.pdf    # custom output path
 intel report -s markets,cyber,earthquakes  # select sections
 ```
 
-Map-first ops center: Leaflet map with toggle-able layers (quakes, military, conflict, fires, convergence, nuclear, infrastructure), 47 live SSE feeds, HUD bar, glassmorphic panels, per-source circuit breaker health.
+Map-first ops center: Leaflet map with toggle-able layers (quakes, military, conflict, fires, convergence, nuclear, infrastructure, your AOI geofences with last-sweep counts), 47 live SSE feeds, HUD bar, glassmorphic panels, per-source circuit breaker health.
 
 ### CLI
 
@@ -141,7 +145,7 @@ collector.py  (daemon)    ─┘
 - **CircuitBreaker**: Per-source tracking. 3 consecutive failures trips for 5 minutes. Each RSS feed gets its own breaker.
 - **Cache**: SQLite WAL-mode TTL cache. `get()` returns live data, `get_stale()` returns expired data for fallback.
 - **VectorStore**: Qdrant + FastEmbed (BAAI/bge-small-en-v1.5, 384-dim). Async background worker queue for non-blocking storage. Enables semantic search across all accumulated intelligence.
-- **Collector**: Standalone daemon that fetches all 46 sources in parallel and populates the vector store. Run once or as a daemon (default: 5-minute interval).
+- **Collector**: Standalone daemon that fetches all 51 sources in parallel and populates the vector store. Run once or as a daemon (default: 5-minute interval). Includes the AOI change sweep, so a running daemon continuously watches every defined geofence.
 - **Sources** (`sources/*.py`): 30+ modules, each exports `async def fetch_*(fetcher, **kwargs) -> dict`.
 - **Analysis** (`analysis/*.py`): Cross-domain synthesis — signal aggregation, instability indexing, NLP, company enrichment, macro composite.
 - **Config** (`config/*.py`): Curated datasets — 22 hotspots, 70+ bases, 40 ports, 24 pipelines, 24 nuclear facilities, 34 cables, 48 datacenters, 27 spaceports, 82 exchanges.
@@ -448,20 +452,44 @@ collector.py  (daemon)    ─┘
 
 Static infrastructure results (bases, ports, nuclear, cables, datacenters, spaceports) draw on this repo's curated strategic datasets, which are global and deliberately sparse, not exhaustive local registries. A quiet AOI brief means nothing from those curated sets is in range, not that your area has no infrastructure.
 
-28 of the 120 tools take some geographic parameter, but before the AOI
-family only `intel_signal_convergence` accepted a real point-plus-radius,
-`intel_military_flights` took a bbox, and hotspot escalation scoring was
-restricted to the 22 hardcoded `INTEL_HOTSPOTS`. The `intel_aoi_*` tools
-let you name your own area (a city, a border region, a facility) and get
-the same cited, multi-domain treatment.
+Before the AOI family, only `intel_signal_convergence` accepted a real
+point-plus-radius, `intel_military_flights` took a bbox, and hotspot
+escalation scoring was restricted to the 22 hardcoded `INTEL_HOTSPOTS`.
+The `intel_aoi_*` tools let you name your own area (a city, a border
+region, a facility) and get the same cited, multi-domain treatment.
+Geofences survive the antimeridian (a Bering Strait or Fiji AOI queries
+both sides of the dateline), and pipelines/undersea cables are matched
+as line features via great-circle segment distance, not just by their
+endpoints.
 
-Define an AOI once, then brief and score it on demand:
+Define an AOI once, then brief, score, edit, and watch it. Three
+shapes: a circle (point + radius), a polygon (3-64 vertices, for a
+border region or strait a radius cannot express), or a corridor (a
+waypoint route + width, for a shipping lane or supply road):
 
 ```
 intel_aoi_define(name="Pittsburgh", lat=40.4406, lon=-79.9959, radius_km=50)
-intel_aoi_brief(name="Pittsburgh")
+intel_aoi_define_polygon(name="Taiwan Strait", vertices=[[22.5, 118.0], [22.5, 121.5], [26.5, 122.0], [26.5, 118.5]])
+intel_aoi_define_corridor(name="Suez Approach", waypoints=[[29.9, 32.55], [27.5, 34.0], [24.0, 36.0]], width_km=80)
+intel_aoi_brief(name="Taiwan Strait")
 intel_aoi_escalation(name="Pittsburgh")
+intel_aoi_update(name="Pittsburgh", radius_km=100)   # resize/rename in place
+intel_aoi_changes(name="Suez Approach")  # what entered/left since last sweep
+intel_aoi_digest()  # one-call sweep across ALL your areas
 ```
+
+The same nine operations are available from the terminal: `intel aoi define|define-polygon|define-corridor|list|update|delete|brief|escalation|changes`.
+
+Membership is exact for the shape (an event inside a polygon's
+bounding circle but outside the polygon is excluded); corridor
+distances are measured to the route. Line-feature infrastructure
+(pipelines, undersea cables) matches the bounding circle for
+non-circle shapes, disclosed in `data_gaps`.
+
+`intel_aoi_changes` is the alerting primitive: the first call records a
+baseline, and every later call reports what entered and left the fence
+per domain, with failed fetches reported as `data_gaps` rather than
+counted as departures.
 
 `intel_aoi_brief` filters every geo-capable domain to the 50 km radius
 around Pittsburgh: earthquakes, military flights (bbox derived from the
@@ -507,7 +535,17 @@ intel-collector --daemon              # every 5 minutes
 intel-collector --daemon --interval 120  # every 2 minutes
 intel-collector --sources markets,cyber  # specific domains only
 intel-collector                        # single collection cycle
+intel-collector --daemon --sources aoi --interval 900  # AOI watch only: sweep every geofence every 15 min
 ```
+
+The `aoi` group runs `intel_aoi_digest` as a sweep: each cycle diffs every
+defined AOI against its stored snapshot and advances it, so the daemon
+interval is your geofence watch cadence. Change digests are logged and
+(when the vector store is enabled) stored for semantic search. Set
+`WORLD_INTEL_AOI_WEBHOOK` to get a POST whenever a sweep finds something
+entered or left a geofence (quiet sweeps never fire); with
+`WORLD_INTEL_AOI_WEBHOOK_FORMAT=text` the body is raw markdown with a
+`Title` header, which ntfy-style sinks render directly.
 
 ### Running as a macOS launchd Service
 
@@ -552,6 +590,8 @@ The vector store uses FastEmbed (ONNX-based, BAAI/bge-small-en-v1.5) for embeddi
 | `OLLAMA_API_URL` | No | Ollama server for AI-generated briefs (default: `http://localhost:11434`) |
 | `OLLAMA_MODEL` | No | Ollama model for AI-generated briefs (default: `llama3.2`) |
 | `WORLD_INTEL_LOG_LEVEL` | No | Logging level (default: INFO) |
+| `WORLD_INTEL_AOI_WEBHOOK` | No | URL POSTed when an AOI sweep finds changes (collector daemon); quiet sweeps don't fire |
+| `WORLD_INTEL_AOI_WEBHOOK_FORMAT` | No | `json` (default: title/totals/markdown payload) or `text` (raw markdown body + `Title` header, ntfy-style) |
 
 Everything else uses free, unauthenticated public APIs.
 
@@ -561,7 +601,7 @@ Everything else uses free, unauthenticated public APIs.
 
 ```bash
 pip install -e ".[dev]"
-pytest                       # 251 tests (269 total, 18 live-network smoke tests deselected by default)
+pytest                       # 900 tests (918 total, 18 live-network smoke tests deselected by default)
 pytest --cov=world_intel_mcp # with coverage
 pytest tests/test_forex.py -v # single module
 ```

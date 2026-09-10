@@ -1,8 +1,8 @@
 # World Intel MCP — Feature Parity Roadmap
 
 **Benchmark**: [koala73/worldmonitor](https://github.com/koala73/worldmonitor)
-**Updated**: 2026-06-04
-**Current tools**: 120 (119 intel + 1 status)
+**Updated**: 2026-09-02 (v0.10.0)
+**Current tools**: 132 (131 intel + 1 status)
 
 ---
 
@@ -16,16 +16,19 @@
 
 ---
 
-## 0. Current Assessment / Gap Report
+## 0. Current Assessment / Gap Report (2026-09-01)
 
 | Area | Finding | Status | Action |
 |------|---------|--------|--------|
-| MCP tool parity | 120 tools declared in `TOOLS`; 120 routed in `_dispatch()` | :white_check_mark: | Keep as an invariant |
+| MCP tool parity | 128 tools declared in `TOOLS`; 128 routed in `_dispatch()` | :white_check_mark: | Keep as an invariant (machine-checked by import-based tests) |
 | Optional vector runtime | Missing `qdrant-client` / `fastembed` previously surfaced as runtime failures | :white_check_mark: Fixed | Vector features now degrade cleanly and report availability |
 | Base-environment test run | `pytest -q` fails collection without dev extras because `respx` is not installed | :yellow_circle: | Run `pip install -e ".[dev]"` before full-suite validation |
-| Core verification | 226 non-smoke tests pass with dev extras installed | :white_check_mark: | Full default `pytest` run |
+| Test coverage truth | Was 59% overall on 2026-09-01 morning (`server.py`/`cli.py`/`collector.py` at 0%, `analysis/` NLP modules 0-14%, `sources/intelligence.py` 22%). After the same-day test waves: **81% overall, 597 tests** (analysis modules 96-100%, `sources/intelligence.py` 93%, `server.py` 47% via import-based registry tests). Remaining zeros: `cli.py` (1,076 stmts); `collector.py` at 20% (map verified, run loop untested) | :yellow_circle: Improved | CI coverage gate that ratchets (Phase 24); `cli.py` smoke tests |
+| Geofence correctness | Antimeridian AOIs lost the far side of the dateline (bbox clamp); pipelines/cables matched on endpoints only | :white_check_mark: Fixed in Phase 22 | Segment distance + split bboxes shipped with tests |
+| Security posture | Issue #21 (external report) assessed; no shell/eval/exec, SQL parameterized throughout, report paths server-generated | :white_check_mark: | SECURITY.md added with explicit threat model; cache db now 0600 |
 | Documentation drift | Prior roadmap documented 89/110 tools while the codebase now exposes 113 | :white_check_mark: Updated below | Keep roadmap synced with phase increments |
-| Maintainability | `src/world_intel_mcp/server.py` is ~2.5k lines and remains the main refactor target | :yellow_circle: | Split tool registry and dispatch by domain |
+| Maintainability | server.py split into 12 domain modules + runtime.py (158-line shell); parity enforced at import time | :white_check_mark: Shipped 2026-09-01 (Phase 26) | Largest module 444 lines |
+| CLI/dashboard parity for AOIs | Was MCP-only. `intel aoi` CLI group (9 subcommands) shipped in 0.8.0; dashboard AOI layer with last-sweep counts shipped in 0.10.0 | :white_check_mark: Shipped | Phase 23 complete |
 
 ### Implemented Addendum Missing From Prior Roadmap
 
@@ -474,17 +477,136 @@ fan-out) and delegates to the existing, unmodified `fetch_situation_brief`
 for the AI-generated brief or its mechanically-cited fallback when Ollama
 is unreachable (#18).
 
+### Phase 22: Geofence Hardening + Change Detection (+2 = 122 tools)
+`intel_aoi_update`, `intel_aoi_changes`
+
+Geofence correctness and the alerting primitive:
+
+- **Antimeridian AOIs.** `bboxes_from_radius_km` replaces the old
+  single-box clamp: an AOI whose circle crosses the dateline (Bering
+  Strait, Fiji, Chukotka) now produces two bounding boxes instead of
+  silently losing everything on the far side of lon ±180. Military
+  flight fetches run per box and merge with icao24 dedup; a one-box
+  failure surfaces as `partial coverage` in `data_gaps` instead of
+  passing half-coverage off as full. Wildfire region mapping uses the
+  same wrap-aware boxes, so an AOI just east of the dateline maps into
+  the oceania FIRMS box instead of reporting a false coverage gap.
+- **Lines are lines now.** `segment_distance_km` (great-circle
+  cross-track distance with endpoint clamping) replaces endpoint-only
+  proximity for pipelines and landing-point-only proximity for
+  undersea cables: a pipeline or cable whose midspan passes through
+  the AOI is detected even when its endpoints are far away. Still an
+  approximation of surveyed routes; the docstrings say exactly how.
+- **`intel_aoi_update`.** Rename and/or re-center/resize an AOI in
+  place with define-grade validation and collision checks. A rename
+  keeps change-detection history; a geometry change drops it (the old
+  baseline described a different piece of the planet).
+- **`intel_aoi_changes`.** The geofence alerting primitive: what
+  entered or left since the last sweep, per domain (earthquakes,
+  military flights, ACLED events, wildfire clusters, news mentions),
+  built on the same scoped gather as `intel_aoi_brief` so the two
+  tools can never disagree about what is inside the fence. First
+  sweep is an explicit baseline; a failed domain fetch goes to
+  `data_gaps` and is excluded from the diff (a failed fetch never
+  reads as "everything left the area"), keeping its last real
+  observation for the next successful sweep. Sampled aviation is
+  excluded by design (1-in-10 sample churn is not signal).
+
+Also in this phase: `SECURITY.md` with an explicit threat model
+(prompted by issue #21), cache database created 0600, and the brief's
+gather refactored into a single shared scoping path
+(`_gather_scoped_domains`).
+
+---
+
+## Planned Phases
+
+The roadmap above is history; this section is the actual road ahead.
+Ordered by value; numbers are proposals, not commitments.
+
+### Phase 23 (planned): Geofence Depth
+| Feature | Why | Status |
+|---------|-----|--------|
+| Polygon AOIs | 3-64 vertex shapes, dateline-aware, exact membership across brief/changes/escalation; DB migrates in place | :white_check_mark: Shipped in 0.5.0 (`intel_aoi_define_polygon`) |
+| Corridor AOIs | Waypoint route + width; distances measured to the route | :white_check_mark: Shipped in 0.5.0 (`intel_aoi_define_corridor`) |
+| AOI groups / watchlists | `intel_aoi_digest` sweeps all (or named) AOIs in one call, advancing snapshots | :white_check_mark: Shipped in 0.8.0 |
+| Escalation news + convergence components | `intel_aoi_escalation` reports null for news/convergence; wire GDELT name-mention counts and the existing convergence grid | :yellow_circle: |
+| Geo-scoped news | AOI centre reverse-geocoded via OSM Nominatim (`sources/geocode.py`); GDELT searched for the settlement + county, e.g. `("Pittsburgh" OR "Allegheny County")`. Brief reports `news_scoping`; name-mention fallback is disclosed as a data gap. GDELT GEO 2.0 API was tried first and is 404 (both path variants, measured), so per-article coordinates are not available; the curated 105-city set could not do this either (nearest to Pittsburgh: Toronto, ~360 km) | :white_check_mark: Shipped in 0.10.0 |
+| CLI parity | `intel aoi` group with all 9 subcommands, shared store semantics, live-smoked | :white_check_mark: Shipped in 0.8.0 |
+| Dashboard AOI layer | `/api/aois` + a toggleable "AOI Geofences" Leaflet layer: circles, polygons, and corridors drawn from the store, tooltip/detail with what the last collector sweep counted inside each. Reads the stored snapshot, never gathers live (a never-swept AOI says so instead of showing zeros; a broken store is a 503, not an empty map). Verified in headless Chromium: 2 shapes rendered, 50 km circle at 50,000 m, no console errors | :white_check_mark: Shipped in 0.10.0 |
+| Scheduled AOI sweeps | `aoi_digest` is a collector source (`fetch_aoi_sweep`, 240 s budget): every daemon cycle advances all AOI snapshots, so `--daemon` + the launchd wrapper IS the schedule. Change digests land in the collector log and vector store | :white_check_mark: Shipped in 0.9.0 |
+| AOI change notifications | `WORLD_INTEL_AOI_WEBHOOK` (+ `_FORMAT=json\|text`): the sweep POSTs non-quiet digests; quiet sweeps and dead sinks are honest `notification` records, never silent or fatal. Live-verified against a local sink. Email is out of scope (bring a webhook bridge) | :white_check_mark: Shipped in 0.9.0 |
+
+### Phase 24 (planned): Test Coverage Gate
+Measured 2026-09-01 (before the current test push): 59% statement
+coverage overall; `server.py`, `cli.py`, `collector.py` at 0%;
+`analysis/` NLP modules 0-14%; `sources/intelligence.py` 22%.
+
+| Item | Why | Status |
+|------|-----|--------|
+| Analysis-layer tests (classifier, entities, convergence, spikes, clustering, signals, focal points, surge, cascade, exposure, posture, alerts, instability, world_brief) | The NLP/analysis layer had no executable verification at all | :white_check_mark: Shipped 2026-09-01: 131 tests, all 14 modules at 96-100% |
+| Source-layer tests (intelligence, cyber, climate, displacement, fleet, prediction, service_status, maritime, military helpers, news) | Same class of gap on the fetch/parse layer | :white_check_mark: Shipped 2026-09-01: 89 tests, modules at 79-100% (intelligence.py 93%) |
+| Import-based `server.py` registry tests | The TOOLS/`_dispatch` parity invariant was checked by reading server.py as *text*; now imported under a temp cache path and verified structurally, including a real dispatch round-trip | :white_check_mark: Shipped 2026-09-01 (server.py 0% -> 47%) |
+| `collector.py` source-map test | Map verified earlier; the collect/daemon run loop, filters, and cycle accounting now tested too (97% module coverage) | :white_check_mark: Shipped 2026-09-01 |
+| `cli.py` smoke tests (CliRunner) | 1,076 statements, zero executed by tests; now 76 tests driving all 52 reachable commands, 92% coverage | :white_check_mark: Shipped 2026-09-01 |
+| CI coverage gate with ratchet | `--cov-fail-under=89` live in ci.yml (90% measured 2026-09-01 evening; floor one point under for platform variance). Raise as waves land; never lower | :white_check_mark: Shipped 2026-09-01, ratcheted same day |
+
+### Phase 24.5: Data-Honesty Backlog (top three fixed 2026-09-01)
+Verified bugs found by the 2026-09-01 test waves. The two cross-module
+silent-zero key mismatches found at the same time (`world_brief`
+`article_count` vs `size`, `fleet` `warning_count` vs
+`naval_warnings`) were fixed in 0.4.0 with regression tests; the three
+fail-quietly bugs below were fixed in the same-day follow-up
+(issues #22-#24, each with a flipped regression test).
+
+| Bug | Where | Class | Status |
+|-----|-------|-------|--------|
+| UNHCR outage returned all-zero global totals with no error/degraded key ("zero refugees worldwide") | `sources/displacement.py` | fail-reads-as-success | :white_check_mark: Fixed (#22) |
+| A climate zone whose fetch failed was silently omitted; full outage yielded `{"zones": {}}` with no marker | `sources/climate.py` | silent degradation | :white_check_mark: Fixed (#23) |
+| "Resolved: Major outage" classified as an active critical incident; a dead provider feed still listed as checked | `sources/service_status.py` | misclassification | :white_check_mark: Fixed (#24) |
+| Naval warnings apply to all 9 waterways identically (no proximity/NAVAREA filter); `total_nearby` computed but never emitted | `sources/intelligence.py` vessel snapshot | precision | :red_circle: |
+| Country/company/leader entity matching was substring-based ("usa" inside "thousand", "hamas" inside "Bahamas") | `analysis/entities.py` | false positives | :white_check_mark: Fixed in 0.5.0 (word-boundary alternations, measured faster) |
+| Category keywords matched substrings ("airstrike" bumped severity via "strike"; "denied" fired "ied") | `analysis/classifier.py` | false positives | :white_check_mark: Fixed in 0.5.0 (boundary-anchored stems, per-keyword overrides) |
+| Silent-empty degradation without a marker on RSS/API failure | `sources/prediction.py` (documented as intended), `sources/maritime.py`, `sources/news.py` RSS path, `sources/fleet.py` `_safe` wrapper | silent degradation | :red_circle: |
+| 33 CLI commands rendered upstream errors as healthy empty states | `cli.py` | fail-reads-as-success | :white_check_mark: Fixed in 0.6.0 (shared bail-on-error path; 43 failing-first tests) |
+| Rich markup swallowed lowercase bracketed values and let remote titles inject markup | `cli.py` | output corruption | :white_check_mark: Fixed in 0.6.0 (per-site escaping; injection test) |
+| Remote data inside Rich TABLE cells was not markup-escaped | `cli.py` | output corruption | :white_check_mark: Fixed in 0.6.0 (`_cell` Text-wrapping convention, 11 injection tests; error styles unified across all 53 commands) |
+
+### Phase 25 (planned): Missing Domains
+Verified absent from `sources/` on 2026-09-01 (grep, not memory):
+
+| Feature | Source candidate | Status |
+|---------|------------------|--------|
+| Severe weather alerts | NWS (US, 0.5.0) + Meteoalarm (39 EU countries, 0.8.0; per-country feeds only - no Europe-wide feed exists) | :white_check_mark: |
+| Tropical cyclone tracking | NHC (0.5.0) + JTWC (0.8.0: NW Pacific/N Indian/S Hemisphere; positions live in linked products). Forecast tracks still open | :yellow_circle: warnings done |
+| Dedicated volcano monitoring | GVP weekly report shipped in 0.5.0 (`intel_volcano_activity`) | :white_check_mark: |
+| NOTAMs | BLOCKED upstream: official FAA API is key-required (401 verified live 2026-09-01); unofficial backend POST-only/undocumented. Revisit if FAA opens access | :red_circle: blocked |
+| Launch schedules | Launch Library 2 shipped in 0.5.0 (`intel_launch_schedule`) | :white_check_mark: |
+| BGP routing status | `intel_bgp_status` (0.8.0): per-resource RIS visibility + RPKI via RIPEstat. Global incident/hijack feeds remain open (no key-free target-free feed found) | :yellow_circle: per-resource done |
+
+Note: resolved in 0.6.0 - the four domains are in the collector's
+roster (50 sources), with the invariant test and docs updated together.
+
+### Phase 26: server.py Modularization (shipped 2026-09-01)
+The 2,890-line monolith is a 158-line shell over 12 domain modules in
+`tools/` plus shared infrastructure in `runtime.py`. The
+TOOLS/`_dispatch` parity invariant is now enforced at import time by
+`tools.aggregate()` (drift or collision refuses to start), verified by
+an AST byte-parity gate against the pre-split registry, the full
+suite, and a live MCP stdio session.
+
 ---
 
 ## Summary
 
 | Category | Current | Notes |
 |----------|---------|-------|
-| Total MCP tools | 120 | 119 intelligence tools + `intel_status` |
-| Tool parity | 120 / 120 | `TOOLS` and `_dispatch()` are aligned |
+| Total MCP tools | 128 | 127 intelligence tools + `intel_status` |
+| Tool parity | 128 / 128 | `TOOLS` and `_dispatch()` are aligned (now machine-checked by import-based tests, not text scans) |
 | Static datasets | 18 | Bases, ports, pipelines, nuclear, cables, datacenters, spaceports, minerals, exchanges, trade routes, cloud regions, financial centers |
 | RSS feeds | 119 | 24 categories |
-| Tests in repo | 327 | 309 non-smoke tests + 18 live smoke tests; full suite requires `.[dev]` |
-| Primary remaining gap | Architecture | `server.py` monolith remains the main refactor target |
+| Tests in repo | 918 | 900 non-smoke tests + 18 live smoke tests (measured 2026-09-02: `pytest -q` -> 900 passed, 18 deselected); full suite requires `.[dev]` |
+| Statement coverage | 91% | Measured 2026-09-01 night full-suite `--cov` (91.18%); was 59% that morning. CI ratchet at 89 |
+| Primary remaining gaps | `cli.py` tests, coverage gate, `server.py` refactor | See Planned Phases 23-26 |
 
-**Bottom line**: 120 tools across 30+ domains, with the roadmap now aligned to the live MCP registry. The main remaining gaps are full-environment test bootstrapping (`.[dev]`) and continued modularization of the monolithic `server.py` tool registry/dispatcher.
+**Bottom line**: 122 tools across 30+ domains, with the roadmap aligned to the live MCP registry and, for the first time, a forward-looking plan (Phases 23-26): geofence depth, the coverage gate, missing domains, and `server.py` modularization.

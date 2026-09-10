@@ -52,9 +52,12 @@ SOURCES = [
     ("residential_natgas", "sources.economic", "fetch_residential_natgas_prices", {}),
     ("electricity_rates", "sources.economic", "fetch_electricity_rates", {}),
     ("central_bank_rates", "sources.central_banks", "fetch_central_bank_rates", {}),
-    # Natural Disasters (2)
+    # Natural Disasters & Hazards (5)
     ("earthquakes", "sources.seismology", "fetch_earthquakes", {}),
     ("wildfires", "sources.wildfire", "fetch_wildfires", {}),
+    ("weather_alerts", "sources.weather", "fetch_weather_alerts", {}),
+    ("volcano_activity", "sources.volcano", "fetch_volcano_activity", {}),
+    ("cyclones", "sources.cyclones", "fetch_cyclones", {}),
     # Conflict & Security (4)
     ("acled_events", "sources.conflict", "fetch_acled_events", {}),
     ("ucdp_events", "sources.conflict", "fetch_ucdp_events", {}),
@@ -79,8 +82,9 @@ SOURCES = [
     ("domestic_flights", "sources.aviation", "fetch_domestic_flights", {}),
     # Cyber (1)
     ("cyber_threats", "sources.cyber", "fetch_cyber_threats", {}),
-    # Space Weather (1)
+    # Space (2)
     ("space_weather", "sources.space_weather", "fetch_space_weather", {}),
+    ("launch_schedule", "sources.launches", "fetch_launch_schedule", {}),
     # AI/Tech (1)
     ("ai_watch", "sources.ai_watch", "fetch_ai_watch", {}),
     # Health (1)
@@ -104,7 +108,18 @@ SOURCES = [
     ("strategic_posture", "analysis.posture", "fetch_strategic_posture", {}),
     ("fleet_report", "sources.fleet", "fetch_fleet_report", {}),
     ("usni_fleet", "sources.usni_fleet", "fetch_usni_fleet", {}),
+    # AOI (change sweep across every user-defined geofence; each AOI's
+    # snapshot advances, so the daemon interval IS the watch cadence)
+    ("aoi_digest", "analysis.aoi", "fetch_aoi_sweep", {}),
 ]
+
+# Per-source timeout overrides (seconds), consulted instead of the flat
+# collect_once budget. The AOI sweep fans out to ~8 domains per defined
+# AOI, several behind rate floors: one 50 km AOI on a cold cache was
+# measured (2026-09-01) to exceed the default 45 s.
+SOURCE_TIMEOUTS: dict[str, float] = {
+    "aoi_digest": 240.0,
+}
 
 # Domain name → list of source names for --sources filtering
 DOMAIN_GROUPS = {
@@ -125,7 +140,13 @@ DOMAIN_GROUPS = {
         "electricity_rates",
         "central_bank_rates",
     ],
-    "natural": ["earthquakes", "wildfires"],
+    "natural": [
+        "earthquakes",
+        "wildfires",
+        "weather_alerts",
+        "volcano_activity",
+        "cyclones",
+    ],
     "conflict": ["acled_events", "ucdp_events", "displacement"],
     "military": ["military_flights"],
     "infrastructure": ["internet_outages", "cable_health", "service_status"],
@@ -135,7 +156,7 @@ DOMAIN_GROUPS = {
     "prediction": ["prediction_markets"],
     "aviation": ["airport_delays", "domestic_flights"],
     "cyber": ["cyber_threats"],
-    "space": ["space_weather"],
+    "space": ["space_weather", "launch_schedule"],
     "ai": ["ai_watch"],
     "health": ["disease_outbreaks"],
     "elections": ["election_calendar"],
@@ -143,6 +164,7 @@ DOMAIN_GROUPS = {
     "social": ["social_signals"],
     "nuclear": ["nuclear_monitor"],
     "traffic": ["traffic_flow", "traffic_incidents"],
+    "aoi": ["aoi_digest"],
     "analysis": [
         "risk_scores",
         "signal_convergence",
@@ -194,12 +216,13 @@ async def collect_once(
     ]
 
     async def _fetch_one(name: str, module_path: str, fn_name: str, kwargs: dict):
+        budget = SOURCE_TIMEOUTS.get(name, timeout)
         try:
             fn = _import_fetch_fn(module_path, fn_name)
-            result = await asyncio.wait_for(fn(fetcher, **kwargs), timeout=timeout)
+            result = await asyncio.wait_for(fn(fetcher, **kwargs), timeout=budget)
             return name, result, None
         except asyncio.TimeoutError:
-            return name, None, f"timeout ({timeout}s)"
+            return name, None, f"timeout ({budget}s)"
         except Exception as exc:
             return name, None, str(exc)[:120]
 
